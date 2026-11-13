@@ -1,0 +1,450 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Neon Multiplayer Arena</title>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;background:#080d19;color:white;
+ font-family:Arial,sans-serif;text-align:center
+}
+header{padding:20px;background:#111d33}
+h1{color:#00e5ff;margin:5px}
+.container{max-width:900px;margin:auto;padding:15px}
+.panel{
+ background:#111d33;padding:18px;
+ border:1px solid #253b5d;border-radius:14px;
+ margin-bottom:15px
+}
+input,button{
+ padding:12px;border:0;border-radius:8px;
+ margin:5px;font-size:14px
+}
+input{background:#253653;color:white;width:220px}
+button{background:#00d9f5;font-weight:bold;cursor:pointer}
+button:hover{background:#71efff}
+#status{color:#00ffad;margin:12px}
+canvas{
+ display:block;width:100%;height:auto;
+ background:#0c1628;border:2px solid #00d9f5;
+ border-radius:12px;touch-action:none
+}
+.small{color:#9eafca;font-size:13px}
+#playerList{color:#00e5ff}
+</style>
+</head>
+
+<body>
+
+<header>
+<h1>⚡ NEON ARENA</h1>
+<p>REAL-TIME MULTIPLAYER GAME</p>
+</header>
+
+<div class="container">
+
+<div class="panel">
+<h3>🎮 Multiplayer Lobby</h3>
+
+<button onclick="createRoom()">CREATE ROOM</button>
+
+<p>Your Player ID</p>
+<input id="myId" readonly placeholder="Waiting for ID...">
+<button onclick="copyID()">COPY ID</button>
+
+<hr>
+
+<p>Join Friend's Game</p>
+<input id="friendId" placeholder="Enter Host Player ID">
+<button onclick="joinRoom()">JOIN GAME</button>
+
+<div id="status">Initializing PeerJS...</div>
+<div id="playerList">Players: 0</div>
+</div>
+
+<div class="panel">
+<h3>🌍 GAME ARENA</h3>
+<canvas id="game" width="800" height="500"></canvas>
+<p class="small">WASD / Arrow Keys to move</p>
+</div>
+
+<div class="panel">
+<h3>📱 Mobile Controls</h3>
+<div>
+<button onpointerdown="mobile.up=true" onpointerup="mobile.up=false" onpointerleave="mobile.up=false">⬆️</button>
+</div>
+<div>
+<button onpointerdown="mobile.left=true" onpointerup="mobile.left=false" onpointerleave="mobile.left=false">⬅️</button>
+<button onpointerdown="mobile.down=true" onpointerup="mobile.down=false" onpointerleave="mobile.down=false">⬇️</button>
+<button onpointerdown="mobile.right=true" onpointerup="mobile.right=false" onpointerleave="mobile.right=false">➡️</button>
+</div>
+</div>
+
+</div>
+
+<script>
+const canvas=document.getElementById("game");
+const ctx=canvas.getContext("2d");
+
+const statusEl=document.getElementById("status");
+const playerList=document.getElementById("playerList");
+
+let peer=null;
+let host=false;
+let hostConn=null;
+let connections={};
+let players={};
+let keys={};
+let mobile={up:false,down:false,left:false,right:false};
+let started=false;
+let lastUpdate=0;
+
+const colors=[
+ "#00e5ff","#ff4081","#76ff03",
+ "#ffca28","#b388ff","#ff7043"
+];
+
+function randomColor(){
+ return colors[Math.floor(Math.random()*colors.length)];
+}
+
+function newPlayer(id){
+ return {
+  id:id,
+  x:Math.random()*700+40,
+  y:Math.random()*400+40,
+  color:randomColor()
+ };
+}
+
+let me={
+ id:"",
+ x:200,
+ y:200,
+ color:randomColor()
+};
+
+// PEER INITIALIZATION
+
+function initPeer(){
+
+ if(peer) peer.destroy();
+
+ statusEl.innerText="Connecting to PeerJS...";
+
+ peer=new Peer();
+
+ peer.on("open",id=>{
+  me.id=id;
+  document.getElementById("myId").value=id;
+  statusEl.innerText="Online! Player ID ready.";
+ });
+
+ peer.on("connection",conn=>{
+  if(!host){
+   conn.close();
+   return;
+  }
+  acceptPlayer(conn);
+ });
+
+ peer.on("error",err=>{
+  statusEl.innerText="Error: "+err.type;
+  console.error(err);
+ });
+
+ peer.on("disconnected",()=>{
+  statusEl.innerText="Signaling disconnected. Reconnecting...";
+  peer.reconnect();
+ });
+}
+
+// CREATE ROOM
+
+function createRoom(){
+
+ if(!peer || !peer.open){
+  alert("Please wait for Player ID.");
+  return;
+ }
+
+ host=true;
+ started=true;
+
+ statusEl.innerText="Room created! Share your ID.";
+
+ broadcast();
+}
+
+// ACCEPT GUEST
+
+function acceptPlayer(conn){
+
+ conn.on("open",()=>{
+
+  if(Object.keys(connections).length>=9){
+   conn.send({type:"full"});
+   conn.close();
+   return;
+  }
+
+  connections[conn.peer]=conn;
+  players[conn.peer]=newPlayer(conn.peer);
+
+  statusEl.innerText="New player joined!";
+
+  broadcast();
+
+ });
+
+ conn.on("data",data=>{
+
+  if(data.type==="move" && players[conn.peer]){
+
+   players[conn.peer].x=data.x;
+   players[conn.peer].y=data.y;
+
+   broadcast();
+
+  }
+
+ });
+
+ conn.on("close",()=>{
+  delete connections[conn.peer];
+  delete players[conn.peer];
+  broadcast();
+ });
+
+ conn.on("error",console.error);
+}
+
+// JOIN ROOM
+
+function joinRoom(){
+
+ if(!peer || !peer.open){
+  alert("Wait for your Player ID.");
+  return;
+ }
+
+ const id=document.getElementById("friendId").value.trim();
+
+ if(!id || id===me.id){
+  alert("Enter a valid Host ID.");
+  return;
+ }
+
+ if(hostConn) hostConn.close();
+
+ statusEl.innerText="Joining room...";
+
+ hostConn=peer.connect(id,{reliable:true});
+
+ hostConn.on("open",()=>{
+  host=false;
+  started=true;
+  statusEl.innerText="Connected to Host!";
+  sendMove();
+ });
+
+ hostConn.on("data",data=>{
+
+  if(data.type==="state"){
+   players=data.players||{};
+   if(data.host) players[data.host.id]=data.host;
+  }
+
+  if(data.type==="full"){
+   statusEl.innerText="Room is full!";
+   hostConn.close();
+  }
+
+ });
+
+ hostConn.on("close",()=>{
+  started=false;
+  players={};
+  statusEl.innerText="Host disconnected!";
+ });
+
+ hostConn.on("error",err=>{
+  statusEl.innerText="Connection error: "+err.type;
+ });
+
+}
+
+// BROADCAST
+
+function broadcast(){
+
+ if(!host || !peer) return;
+
+ const state={
+  type:"state",
+  host:me,
+  players:players
+ };
+
+ Object.values(connections).forEach(conn=>{
+  if(conn.open) conn.send(state);
+ });
+
+}
+
+// SEND MOVEMENT
+
+function sendMove(){
+
+ if(host || !hostConn || !hostConn.open) return;
+
+ hostConn.send({
+  type:"move",
+  x:me.x,
+  y:me.y
+ });
+
+}
+
+// KEYBOARD
+
+window.addEventListener("keydown",e=>{
+ const k=e.key.toLowerCase();
+ if(["arrowup","arrowdown","arrowleft","arrowright"," "].includes(k))
+  e.preventDefault();
+ keys[k]=true;
+});
+
+window.addEventListener("keyup",e=>{
+ keys[e.key.toLowerCase()]=false;
+});
+
+window.addEventListener("blur",()=>{
+ keys={};
+ mobile={up:false,down:false,left:false,right:false};
+});
+
+// MOVEMENT
+
+function update(){
+
+ if(!started) return;
+
+ let dx=0,dy=0,speed=4;
+
+ if(keys.w||keys.arrowup||mobile.up)dy--;
+ if(keys.s||keys.arrowdown||mobile.down)dy++;
+ if(keys.a||keys.arrowleft||mobile.left)dx--;
+ if(keys.d||keys.arrowright||mobile.right)dx++;
+
+ if(dx!==0 || dy!==0){
+  const length=Math.hypot(dx,dy);
+  me.x+=dx/length*speed;
+  me.y+=dy/length*speed;
+ }
+
+ me.x=Math.max(15,Math.min(785,me.x));
+ me.y=Math.max(15,Math.min(485,me.y));
+
+}
+
+// DRAW
+
+function drawPlayer(p,label){
+
+ ctx.beginPath();
+ ctx.arc(p.x,p.y,15,0,Math.PI*2);
+ ctx.fillStyle=p.color;
+ ctx.shadowColor=p.color;
+ ctx.shadowBlur=18;
+ ctx.fill();
+ ctx.shadowBlur=0;
+
+ ctx.fillStyle="white";
+ ctx.font="12px Arial";
+ ctx.textAlign="center";
+ ctx.fillText(label,p.x,p.y-24);
+
+}
+
+function draw(){
+
+ ctx.clearRect(0,0,800,500);
+
+ ctx.strokeStyle="#1b2d47";
+
+ for(let x=0;x<800;x+=40){
+  ctx.beginPath();
+  ctx.moveTo(x,0);
+  ctx.lineTo(x,500);
+  ctx.stroke();
+ }
+
+ for(let y=0;y<500;y+=40){
+  ctx.beginPath();
+  ctx.moveTo(0,y);
+  ctx.lineTo(800,y);
+  ctx.stroke();
+ }
+
+ Object.values(players).forEach(p=>{
+  if(p.id!==me.id) drawPlayer(p,p.id.slice(0,6));
+ });
+
+ if(started) drawPlayer(me,"YOU");
+
+ const count=started
+  ? Object.keys(players).length+(host?1:0)
+  : 0;
+
+ playerList.innerText="Players: "+count;
+}
+
+// GAME LOOP
+
+function loop(time){
+
+ update();
+
+ if(started && time-lastUpdate>50){
+
+  if(host) broadcast();
+  else sendMove();
+
+  lastUpdate=time;
+ }
+
+ draw();
+ requestAnimationFrame(loop);
+}
+
+// COPY ID
+
+function copyID(){
+
+ const id=me.id;
+
+ if(!id){
+  alert("Player ID not ready!");
+  return;
+ }
+
+ navigator.clipboard.writeText(id)
+ .then(()=>alert("Player ID copied!"))
+ .catch(()=>alert("Please copy the ID manually."));
+}
+
+// START
+
+initPeer();
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>
